@@ -2,6 +2,9 @@
 
 一个面向计算机与软件相关岗位面试准备场景的智能辅导项目，当前采用 `Vue 3 + Vite + Vue Router + Pinia + FastAPI + LangChain + Chroma + RAG` 架构，支持技术问答、岗位模拟面试、简历定制化提问、项目/会话管理、面试评分、报告导出、历史记录查看与 LangSmith 调试。
 
+<img width="2229" height="1215" alt="942944481b30aea55d9beb5cf0d99399" src="https://github.com/user-attachments/assets/8eada894-4a06-4320-be1a-ca40a428fec5" />
+<img width="2229" height="1215" alt="ef5686155e75faf098f4d67d777e6b69" src="https://github.com/user-attachments/assets/8f13c028-4e83-4766-a628-a8e16fe67219" />
+
 ## 功能概览
 
 - 正式登录体系  
