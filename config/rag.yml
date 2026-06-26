@@ -1,0 +1,24 @@
+chat_provider: openai_compatible
+chat_model_name: deepseek-ai/DeepSeek-V4-Flash
+chat_api_key: xxx
+chat_base_url: "https://api.siliconflow.cn/v1"
+chat_temperature: 0.7
+embedding_provider: openai_compatible
+embedding_model_name: "Qwen/Qwen3-Embedding-0.6B"
+embedding_api_key: xxx
+embedding_base_url: "https://api.siliconflow.cn/v1"
+enable_rerank: true
+rerank_model_name: gte-rerank-v2
+rerank_recall_k: 12
+
+enable_query_rewrite: true
+enable_multi_recall: true
+enable_keyword_expand: true
+query_keyword_max: 6
+multi_recall_k: 8
+keyword_recall_k: 3
+
+enable_self_rag: true
+self_rag_min_docs: 2
+self_rag_min_keyword_hits: 1
+self_rag_low_confidence_threshold: 0.25
