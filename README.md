@@ -3,11 +3,22 @@
 一个面向计算机与软件相关岗位面试准备场景的智能辅导项目，当前采用 `Vue 3 + Vite + Vue Router + Pinia + FastAPI + LangChain + Chroma + RAG` 架构，集成 DeepSeek API，支持技术问答、岗位模拟面试、简历定制化提问、项目/会话管理、面试评分、报告导出、历史记录查看与 LangSmith 调试。
 现在已经更新了后台功能了，实现前台面试工作台与管理后台，支持模式切换、文件上传、流式聊天、报告查看下载、会话管理及 ECharts 数据看板。
 
+面试官账号：
 <img width="2229" height="1215" alt="03ef5ec3-6778-4d4a-9e31-7ccc0fd80bea" src="https://github.com/user-attachments/assets/ea75361e-6815-4ea0-9bd3-6ec39163c7b0" />
 <img width="2229" height="1215" alt="04031c9d203573dc728a966c6d470e18" src="https://github.com/user-attachments/assets/23607d5b-3f39-46c9-baf6-0632491f4fef" />
 <img width="2229" height="1215" alt="image" src="https://github.com/user-attachments/assets/2962066f-6ca3-4be8-9c14-0f7801e4171d" />
 <img width="2229" height="1215" alt="0ec303d6-8f58-4621-951f-61afe9697a78" src="https://github.com/user-attachments/assets/1682a822-d321-4314-a89c-3606a4689eaf" />
 <img width="2229" height="1215" alt="d85e7fe8-2935-4674-8c5c-adaa2a86f3cb" src="https://github.com/user-attachments/assets/1d6a8814-c68e-4627-bbf0-bd3c0feef5eb" />
+
+
+管理员账号：
+<img width="2229" height="1215" alt="image" src="https://github.com/user-attachments/assets/56d69c8e-e74c-4a87-bd41-930990513f6d" />
+<img width="2229" height="1215" alt="image" src="https://github.com/user-attachments/assets/304a110a-505b-40a3-ad1e-2870d675ce71" />
+<img width="2229" height="1215" alt="image" src="https://github.com/user-attachments/assets/59359290-a6e2-46ea-bf88-95e9911fadcb" />
+
+普通用户/面试候选人账号：
+<img width="2229" height="1215" alt="3c526d2d-65d0-45e2-ab9b-c026036fdd54" src="https://github.com/user-attachments/assets/6afb71bf-a347-40ea-8c37-24490a27706e" />
+
 
 ## 功能概览
 
