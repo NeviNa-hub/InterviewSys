@@ -1,6 +1,7 @@
 # 智能面试辅导场景的前后端完整 Web 系统
 
-一个面向计算机与软件相关岗位面试准备场景的智能辅导项目，当前采用 `Vue 3 + Vite + Vue Router + Pinia + FastAPI + LangChain + Chroma + RAG` 架构，支持技术问答、岗位模拟面试、简历定制化提问、项目/会话管理、面试评分、报告导出、历史记录查看与 LangSmith 调试。现在已经更新了后台功能了。
+一个面向计算机与软件相关岗位面试准备场景的智能辅导项目，当前采用 `Vue 3 + Vite + Vue Router + Pinia + FastAPI + LangChain + Chroma + RAG` 架构，集成 DeepSeek API，支持技术问答、岗位模拟面试、简历定制化提问、项目/会话管理、面试评分、报告导出、历史记录查看与 LangSmith 调试。
+现在已经更新了后台功能了，实现前台面试工作台与管理后台，支持模式切换、文件上传、流式聊天、报告查看下载、会话管理及 ECharts 数据看板。
 
 <img width="2229" height="1215" alt="03ef5ec3-6778-4d4a-9e31-7ccc0fd80bea" src="https://github.com/user-attachments/assets/ea75361e-6815-4ea0-9bd3-6ec39163c7b0" />
 <img width="2229" height="1215" alt="04031c9d203573dc728a966c6d470e18" src="https://github.com/user-attachments/assets/23607d5b-3f39-46c9-baf6-0632491f4fef" />
