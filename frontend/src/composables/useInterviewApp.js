@@ -14,10 +14,19 @@ import { cloneValue } from "../utils/clone.js";
 import { debounce } from "../utils/timing.js";
 
 export function useInterviewApp() {
-  // useInterviewApp 是“前端业务编排层”：
-  // - store 负责存状态
-  // - api/client 负责发请求
-  // - 这里负责把页面动作、接口、状态更新、流式处理串成一条完整链路
+  // 这是前端最核心的业务编排层。
+  //
+  // 你可以把它理解成：
+  // - store 负责“存状态”
+  // - api/client 负责“发请求”
+  // - 当前这个 composable 负责“把页面动作串成完整业务流程”
+  //
+  // 例如“发送一条问答消息”，不是简单调一个接口，而是：
+  // 1. 读取输入框
+  // 2. 做乐观更新
+  // 3. 发起流式请求
+  // 4. 持续更新消息
+  // 5. 处理停止、重试、报错
   const appStore = useAppStore();
   const {
     bootstrapping,
@@ -54,29 +63,49 @@ export function useInterviewApp() {
     activeConversation,
     canResumeCurrentReply,
     canRetryCurrentReply,
+    currentRunId,
   } = storeToRefs(appStore);
 
-  // 历史记录列表一般不需要用户每次切换都立刻狂刷接口，
-  // 所以这里用 debounce 做一个轻量防抖。
+  // 历史记录列表切换时不需要每次都立刻请求，先做一次轻量防抖。
   const debouncedHistoryLoader = debounce(() => {
     loadHistoryRecordsImmediate();
   }, 260);
 
   onBeforeUnmount(() => {
-    // 页面卸载时主动中断还在进行中的流式请求，
-    // 避免组件销毁后 reader 还在继续推数据。
+    // 页面销毁前，如果还在流式回复，就主动中断。
     typingState.value?.controller?.abort();
   });
 
   async function bootstrap() {
-    // 启动流程：
-    // 前端打开后先请求 /api/bootstrap，
-    // 后端返回当前登录态、候选人状态、天气、文案、历史记录摘要。
     bootstrapping.value = true;
     appStore.setErrorMessage("");
     try {
-      const data = await apiGet("/api/bootstrap");
+      // 前后端同时启动时，FastAPI 可能仍在加载 Python 依赖。
+      // 首屏对网络错误做有限重试，避免只因后端慢几秒就直接显示失败页。
+      let data = null;
+      let lastError = null;
+      for (let attempt = 0; attempt < 15; attempt += 1) {
+        try {
+          data = await apiGet("/api/bootstrap");
+          break;
+        } catch (error) {
+          lastError = error;
+          await new Promise((resolve) => setTimeout(resolve, 1000));
+        }
+      }
+      if (!data) {
+        throw lastError || new Error("后端服务尚未启动。");
+      }
       appStore.applyBootstrapPayload(data);
+      await refreshRoleOptions({ silent: true });
+      const pendingRunId = data.candidate?.pending_run_id;
+      if (pendingRunId) {
+        const recovered = await recoverCompletedInterviewRun(pendingRunId);
+        if (recovered?.candidate) {
+          candidate.value = recovered.candidate;
+          appStore.setCurrentCitations(recovered.evidence || []);
+        }
+      }
     } catch (error) {
       appStore.setErrorMessage(normalizeErrorMessage(error, ERROR_MESSAGES.BOOTSTRAP));
     } finally {
@@ -84,7 +113,34 @@ export function useInterviewApp() {
     }
   }
 
+  async function refreshBootstrapData() {
+    try {
+      const data = await apiGet("/api/bootstrap");
+      appStore.applyBootstrapPayload(data);
+      return data;
+    } catch (error) {
+      appStore.setErrorMessage(normalizeErrorMessage(error, ERROR_MESSAGES.BOOTSTRAP));
+      return null;
+    }
+  }
+
+  async function refreshRoleOptions(options = {}) {
+    const silent = Boolean(options.silent);
+    try {
+      const data = await apiGet("/api/roles");
+      appStore.setRoleOptions(data.role_options || []);
+      return data.role_options || [];
+    } catch (error) {
+      if (!silent) {
+        appStore.setErrorMessage(normalizeErrorMessage(error, "刷新岗位配置失败。"));
+      }
+      return meta.value.role_options || [];
+    }
+  }
+
   function syncAppPayload(data, options = {}) {
+    // 后端很多接口都会返回“最新的全局状态”。
+    // 所以前端通常不是只改一个字段，而是把整包 payload 再同步回 store。
     appStore.applyBootstrapPayload(data);
     if (options.mode) {
       appStore.setMode(options.mode);
@@ -92,13 +148,12 @@ export function useInterviewApp() {
   }
 
   async function login() {
-    // 登录成功后，后端除了 auth，还会一并返回该用户当前工作态。
-    // 所以前端可以直接刷新整个工作台，而不是只改一个 token。
     appStore.setLoadingAction(LOADING_ACTIONS.LOGIN);
     appStore.setErrorMessage("");
     try {
       const data = await apiPost("/api/auth/login", loginForm.value);
       syncAppPayload(data);
+      await refreshRoleOptions({ silent: true });
       appStore.setMode(MODES.QA);
       appStore.resetLoginForm();
     } catch (error) {
@@ -114,6 +169,7 @@ export function useInterviewApp() {
     try {
       const data = await apiPost("/api/auth/register", registerForm.value);
       syncAppPayload(data);
+      await refreshRoleOptions({ silent: true });
       appStore.setMode(MODES.QA);
       appStore.resetRegisterForm();
     } catch (error) {
@@ -137,8 +193,7 @@ export function useInterviewApp() {
   }
 
   async function importKnowledge() {
-    // 知识库导入是典型的文件上传流程：
-    // File[] -> FormData -> POST /api/knowledge/import -> 后端解析与入库
+    // 典型文件上传链路：File[] -> FormData -> POST -> 后端解析入库
     appStore.setLoadingAction(LOADING_ACTIONS.KNOWLEDGE);
     appStore.setErrorMessage("");
     try {
@@ -177,8 +232,6 @@ export function useInterviewApp() {
     if (!resumeFile.value || !candidate.value) {
       return;
     }
-    // 简历上传后，后端会抽取文本并更新 candidate.resume_text / resume_filename。
-    // 前端只需要用返回的新 candidate 覆盖旧状态即可。
     appStore.setLoadingAction(LOADING_ACTIONS.RESUME);
     appStore.setProgressMessage("正在分析简历...");
     appStore.setErrorMessage("");
@@ -234,6 +287,7 @@ export function useInterviewApp() {
   }
 
   async function ensureCandidateReady() {
+    // 页面刷新或切会话后，前端可能已经登录，但当前候选人状态还没同步回来。
     if (candidate.value || !auth.value.authenticated) {
       return candidate.value;
     }
@@ -252,15 +306,38 @@ export function useInterviewApp() {
     if (!candidate.value || isTyping.value) {
       return;
     }
-    // 开始面试时，前端传 role，后端决定首题内容、面试状态机初始状态等。
+    await refreshRoleOptions({ silent: true });
     appStore.setLoadingAction(LOADING_ACTIONS.INTERVIEW_START);
     appStore.setErrorMessage("");
     appStore.setProgressMessage(
       resumeFile.value || candidate.value.resume_text ? "正在分析简历..." : "正在生成首个问题..."
     );
     try {
+      // 先在前端乐观清空上一轮结果，避免新一轮首题还没返回时，
+      // 页面继续展示上一轮的得分、报告和“已结束”状态。
+      const optimistic = cloneValue(candidate.value);
+      optimistic.interview_history = [];
+      optimistic.interview_questions = [];
+      optimistic.interview_report = "";
+      optimistic.interview_report_file = "";
+      optimistic.latest_report_record_id = null;
+      optimistic.interview_score = 0;
+      optimistic.interview_finished = false;
+      optimistic.interview_started = false;
+      candidate.value = optimistic;
+
       if (resumeFile.value) {
         await uploadResume({ silent: true });
+        const afterResumeUpload = cloneValue(candidate.value);
+        afterResumeUpload.interview_history = [];
+        afterResumeUpload.interview_questions = [];
+        afterResumeUpload.interview_report = "";
+        afterResumeUpload.interview_report_file = "";
+        afterResumeUpload.latest_report_record_id = null;
+        afterResumeUpload.interview_score = 0;
+        afterResumeUpload.interview_finished = false;
+        afterResumeUpload.interview_started = false;
+        candidate.value = afterResumeUpload;
         appStore.setLoadingAction(LOADING_ACTIONS.INTERVIEW_START);
         appStore.setProgressMessage("正在生成首个问题...");
       }
@@ -294,8 +371,6 @@ export function useInterviewApp() {
     if (!candidate.value) {
       return;
     }
-    // 这里的 progressMessage 是细粒度 loading 文案，
-    // 用来告诉用户当前不是“卡住”，而是在生成报告。
     appStore.setLoadingAction(LOADING_ACTIONS.REPORT);
     appStore.setErrorMessage("");
     appStore.setProgressMessage("正在整理面试记录...");
@@ -521,10 +596,9 @@ export function useInterviewApp() {
     if (!candidate.value || !qaInput.value.trim() || isTyping.value) {
       return;
     }
-    // 发送消息前先做“乐观更新”：
-    // 1. 立即把用户消息插入本地历史
-    // 2. 再插入一条 assistant 占位消息
-    // 这样用户会立刻看到自己的输入和“AI 正在回答”的状态，而不是等后端返回后才出现。
+
+    // 这里先做乐观更新：
+    // 用户消息立刻显示，assistant 先插入一条“生成中”的占位消息。
     const message = qaInput.value.trim();
     qaInput.value = "";
     appStore.setErrorMessage("");
@@ -623,22 +697,23 @@ export function useInterviewApp() {
   }
 
   async function retryOrResumeHistory({ path, historyKey, pendingMessage, action, fallbackErrorMessage, abortedMessage }) {
-    // 继续生成 / 重试本轮回答：
-    // 都是拿最后一条 assistant 消息做复写，然后重新发起流式请求。
     if (!candidate.value || isTyping.value) {
       return;
     }
+
     const optimistic = cloneValue(candidate.value);
     const history = optimistic[historyKey];
     if (!history?.length || history[history.length - 1]?.role !== "assistant") {
       return;
     }
+
     history[history.length - 1] = {
       ...history[history.length - 1],
       content: pendingMessage,
       status: MESSAGE_STATUS.GENERATING,
     };
     candidate.value = optimistic;
+
     await streamAssistantReply({
       path,
       payload: { action },
@@ -659,12 +734,12 @@ export function useInterviewApp() {
     fallbackErrorMessage,
     abortedMessage,
   }) {
-    // 真流式链路核心：
+    // 真流式链路可以直接记这 5 步：
     // 1. fetch 请求后端流式接口
     // 2. getReader() 循环读取字节流
-    // 3. TextDecoder 把字节流解码成字符串
-    // 4. handleStreamBuffer 解析每一行 JSON 事件
-    // 5. 持续把最新文本写回 Pinia -> Vue 自动刷新页面
+    // 3. TextDecoder 解码成字符串
+    // 4. 解析每一行 JSON 事件
+    // 5. 把最新文本写回 Pinia，让 Vue 自动更新页面
     const controller = new AbortController();
     let partialText = "";
     appStore.setTypingState({ historyKey, messageIndex: assistantIndex, controller });
@@ -681,10 +756,6 @@ export function useInterviewApp() {
       const decoder = new TextDecoder("utf-8");
       let buffer = "";
 
-      // 后端当前协议是“按行返回 JSON 事件”：
-      // {"type":"status","content":"正在分析简历..."}
-      // {"type":"chunk","content":"第一段文本"}
-      // {"type":"done","reply":"完整文本","candidate":{...}}
       while (true) {
         const { done, value } = await reader.read();
         if (done) {
@@ -706,20 +777,31 @@ export function useInterviewApp() {
           candidate.value = nextCandidate;
         }
       });
+      const finalMessage = candidate.value?.[historyKey]?.[assistantIndex];
+      if (!finalMessage || finalMessage.status === MESSAGE_STATUS.GENERATING) {
+        throw new Error("流式连接提前结束，正在尝试恢复本轮结果。");
+      }
     } catch (error) {
-      // AbortError 一般来自用户手动点击“停止当前回复”。
-      // 此时不算真正失败，而是把消息状态标记为 interrupted，便于后续继续生成。
       if (error?.name === "AbortError") {
         const interruptedText = partialText ? `${partialText}${UI_TEXT.INTERRUPTED_SUFFIX}` : abortedMessage;
         appStore.updateHistoryMessage(historyKey, assistantIndex, interruptedText, MESSAGE_STATUS.INTERRUPTED);
       } else {
-        appStore.setErrorMessage(normalizeErrorMessage(error, fallbackErrorMessage));
-        appStore.updateHistoryMessage(
-          historyKey,
-          assistantIndex,
-          partialText || error.message || "回复失败，请稍后重试。",
-          MESSAGE_STATUS.INTERRUPTED,
-        );
+        const recovered = path.includes("/api/interview/")
+          ? await recoverCompletedInterviewRun(currentRunId.value)
+          : null;
+        if (recovered?.candidate) {
+          candidate.value = recovered.candidate;
+          appStore.setCurrentCitations(recovered.evidence || []);
+          appStore.setErrorMessage("");
+        } else {
+          appStore.setErrorMessage(normalizeErrorMessage(error, fallbackErrorMessage));
+          appStore.updateHistoryMessage(
+            historyKey,
+            assistantIndex,
+            partialText || error.message || "回复失败，请稍后重试。",
+            MESSAGE_STATUS.INTERRUPTED,
+          );
+        }
       }
     } finally {
       appStore.setTypingState(null);
@@ -729,8 +811,8 @@ export function useInterviewApp() {
   }
 
   function handleStreamBuffer(buffer, historyKey, assistantIndex, pendingMessage, onProgress) {
-    // buffer 里可能同时拼着多行事件，也可能最后半行还没接收完。
-    // 所以这里按换行切分，只处理完整行，把最后残余半行继续留给下一轮 reader.read()。
+    // buffer 里可能已经积累了多行，也可能最后一行还没收完整。
+    // 所以这里只处理完整行，把半行内容留给下一轮 read。
     const lines = buffer.split("\n");
     const remainder = lines.pop() ?? "";
     let currentText = getHistoryMessageContent(historyKey, assistantIndex);
@@ -743,25 +825,29 @@ export function useInterviewApp() {
       if (!raw) {
         return;
       }
-      // 这里约定前后端的通信协议是“每行一个 JSON 事件对象”。
-      // 这是当前项目的前端流式渲染核心知识点之一。
       const event = JSON.parse(raw);
+      if (event.type === "run_started") {
+        appStore.beginAgentRun(event.run_id);
+        appStore.recordAgentEvent(event);
+        return;
+      }
+      if (["node_started", "node_finished", "tool_called", "retrieval_finished", "run_finished"].includes(event.type)) {
+        appStore.recordAgentEvent(event);
+        if (event.content) appStore.setProgressMessage(event.content);
+        return;
+      }
       if (event.type === "status") {
-        // status 事件只更新顶部文案，不写入聊天气泡正文。
         appStore.setProgressMessage(event.content || "");
         return;
       }
-      if (event.type === "chunk") {
-        // chunk 事件表示模型又生成了一小段文本。
-        // 前端把它不断拼到最后一条 assistant 消息里，就形成“边生成边显示”的效果。
+      if (event.type === "chunk" || event.type === "token") {
         currentText += event.content || "";
         appStore.updateHistoryMessage(historyKey, assistantIndex, currentText, MESSAGE_STATUS.GENERATING);
         onProgress(currentText);
         return;
       }
       if (event.type === "done") {
-        // done 事件表示后端已经生成完毕。
-        // 有些接口会直接把完整 candidate 一并回传，这样前端不仅拿到文本，还拿到最新状态机结果、分数等。
+        appStore.setCurrentCitations(event.evidence || []);
         if (event.candidate) {
           candidate.value = event.candidate;
         } else {
@@ -772,6 +858,10 @@ export function useInterviewApp() {
       }
       if (event.type === "error") {
         throw new Error(event.detail || "流式请求失败，请稍后重试。");
+      }
+      if (event.type === "run_error") {
+        appStore.recordAgentEvent(event);
+        throw new Error(event.detail || "Agent 工作流执行失败。");
       }
     });
 
@@ -786,15 +876,35 @@ export function useInterviewApp() {
     return history?.[messageIndex]?.content || "";
   }
 
-  function requestStopTyping() {
-    // 点击“停止当前回复”时，本质上是中断 fetch。
-    // 中断后 catch 里会收到 AbortError，然后把消息标记成 interrupted。
+  async function requestStopTyping() {
+    // 主动停止先通知后端写入取消标记，再中断浏览器的流读取。
+    // 这和网络意外断开不同：断网时后台任务会继续，以便稍后恢复结果。
     appStore.setStopRequested(true);
+    if (currentRunId.value && typingState.value?.historyKey === "interview_history") {
+      await apiPost(`/api/platform/agent-runs/${currentRunId.value}/cancel`, {}).catch(() => null);
+    }
     typingState.value?.controller?.abort();
   }
 
+  async function recoverCompletedInterviewRun(runId) {
+    if (!runId) {
+      return null;
+    }
+    // 模型线程可能比网络请求晚几秒结束，因此进行有限次数轮询。
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      try {
+        return await apiPost(`/api/interview/runs/${runId}/recover`, {});
+      } catch (error) {
+        if (!String(error.message || "").includes("仍在生成")) {
+          return null;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 600));
+      }
+    }
+    return null;
+  }
+
   function normalizeErrorMessage(error, fallback) {
-    // 把技术错误尽量转成更可读的业务提示，避免把底层异常原样甩给用户。
     const text = String(error?.message || fallback || "操作失败，请稍后重试。").trim();
     if (text.includes("401") || text.includes("未登录") || text.includes("登录已失效")) {
       return "登录状态已失效，请重新登录后再继续操作。";
@@ -811,10 +921,10 @@ export function useInterviewApp() {
     return text || fallback || "操作失败，请稍后重试。";
   }
 
-  // 这些包装函数显式把参数转交给 Pinia action，
-  // 避免把 store action 当成“裸函数回调”传给模板时出现 this / 上下文丢失。
-  function setAuthMode(mode) {
-    appStore.setAuthMode(mode);
+  // 这些包装函数显式把参数转交给 Pinia action。
+  // 这样模板层拿到的是稳定的函数调用入口。
+  function setAuthMode(nextMode) {
+    appStore.setAuthMode(nextMode);
   }
 
   function setLoginForm(payload) {
@@ -849,24 +959,26 @@ export function useInterviewApp() {
     appStore.setLangsmith(payload);
   }
 
-  function setMode(mode) {
-    appStore.setMode(mode);
+  function setMode(nextMode) {
+    appStore.setMode(nextMode);
   }
 
   function setWorkspace(payload) {
     appStore.setWorkspace(payload);
   }
 
-  function setThemeMode(mode) {
-    appStore.setThemeMode(mode);
+  function setThemeMode(nextMode) {
+    appStore.setThemeMode(nextMode);
   }
 
   return {
-    // 对页面层暴露两类东西：
-    // 1. 所有响应式状态（storeToRefs）
-    // 2. 所有页面可触发的动作（login/sendQaMessage/requestStopTyping 等）
+    // 页面层最终拿到两类东西：
+    // 1. 响应式状态
+    // 2. 可以触发的业务动作
     ...storeToRefs(appStore),
     bootstrap,
+    refreshBootstrapData,
+    refreshRoleOptions,
     syncAppPayload,
     login,
     register,

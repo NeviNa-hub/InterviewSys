@@ -11,13 +11,21 @@ from agent.agent_tools import (
     get_id,
     get_weather,
     rag_summarize,
+    knowledge_search,
+    weather_search,
+    tool_tenant_context,
+    resume_lookup,
+    question_search,
+    save_report,
 )
 from agent.interview_multi_agent import MultiAgentInterviewCoordinator
+from agent.interview_langgraph import LangGraphInterviewCoordinator
 from agent.interview_policy import InterviewPolicy
 from agent.interview_role_manager import InterviewRoleManager
 from agent.interview_state_machine import InterviewStateMachine
 from model.factory import chat_model
 from utils.prompt_loader import load_system_prompts2
+from infrastructure.settings import platform_settings
 
 
 class ToolCallingQAAgent:
@@ -91,6 +99,38 @@ class ToolCallingQAAgent:
 
         return {"output": final_text.strip()}
 
+    def stream(self, payload: dict):
+        """Run the tool loop and yield the model's real final-answer chunks."""
+        messages = payload.get("messages", []) or []
+        if self.model_with_tools is None:
+            yield "当前模型未启用工具绑定能力，请稍后重试。"
+            return
+
+        lc_messages = [SystemMessage(content=self._build_system_prompt()), *self._to_lc_messages(messages)]
+        for _ in range(self.max_tool_rounds):
+            aggregate = None
+            for chunk in self.model_with_tools.stream(lc_messages):
+                aggregate = chunk if aggregate is None else aggregate + chunk
+                text = self._extract_message_content(chunk)
+                if text:
+                    yield text
+            if aggregate is None:
+                return
+            lc_messages.append(aggregate)
+            tool_calls = getattr(aggregate, "tool_calls", None) or []
+            if not tool_calls:
+                return
+            for tool_call in tool_calls:
+                tool_name = str(tool_call.get("name", "")).strip()
+                tool = self.tools_by_name.get(tool_name)
+                try:
+                    output = tool.invoke(tool_call.get("args", {})) if tool else f"工具 {tool_name} 不存在，无法执行。"
+                except Exception as exc:
+                    output = f"工具 {tool_name} 执行失败：{exc}"
+                lc_messages.append(
+                    ToolMessage(content=str(output), tool_call_id=tool_call.get("id") or tool_name or "tool_call")
+                )
+
     def _build_system_prompt(self) -> str:
         return (
             f"{self.system_prompt}\n\n"
@@ -155,15 +195,15 @@ class InterviewAssistantService:
         self.role_manager = InterviewRoleManager()
 
         self.qa_tools = [
-            rag_summarize,
-            get_weather,
-            get_city,
-            get_id,
-            get_current_month,
-            fetch_external_data,
+            knowledge_search,
+            weather_search,
+            resume_lookup,
+            question_search,
+            save_report,
         ]
         self.qa_executor = ToolCallingQAAgent(load_system_prompts2(), self.qa_tools)
-        self.interview_coordinator = MultiAgentInterviewCoordinator(
+        coordinator_class = LangGraphInterviewCoordinator if platform_settings.enable_langgraph else MultiAgentInterviewCoordinator
+        self.interview_coordinator = coordinator_class(
             policy=self.policy,
             state_machine=self.state_machine,
             role_manager=self.role_manager,
@@ -206,29 +246,32 @@ class InterviewAssistantService:
             return direct_output.strip()
         return ""
 
-    def qa_chat(self, user_input: str, history: list[dict]) -> str:
+    def qa_chat(self, user_input: str, history: list[dict], tenant_context: dict | None = None) -> str:
         # 普通问答模式入口：输入“用户问题 + 历史”，输出最终答案文本。
         messages = self._to_agent_messages(history)
         if not messages or messages[-1].get("role") != "user" or messages[-1].get("content") != user_input:
             messages.append({"role": "user", "content": user_input})
 
-        response = self.qa_executor.invoke({"messages": messages})
+        with tool_tenant_context(tenant_context):
+            response = self.qa_executor.invoke({"messages": messages})
         output = self._extract_ai_output(response)
         if output:
             return output
         return "这次没有生成有效回答，请换一种问法再试一次。"
 
-    def qa_chat_stream(self, user_input: str, history: list[dict]):
+    def qa_chat_stream(self, user_input: str, history: list[dict], tenant_context: dict | None = None):
         messages = self._to_agent_messages(history)
         if not messages or messages[-1].get("role") != "user" or messages[-1].get("content") != user_input:
             messages.append({"role": "user", "content": user_input})
 
-        response = self.qa_executor.invoke({"messages": messages})
-        output = self._extract_ai_output(response)
-        if output:
-            yield from self._yield_text_stream(output)
-            return
-        yield from self._yield_text_stream("这次没有生成有效回答，请换一种问法再试一次。")
+        emitted = False
+        with tool_tenant_context(tenant_context):
+            for chunk in self.qa_executor.stream({"messages": messages}):
+                if chunk:
+                    emitted = True
+                    yield str(chunk)
+        if not emitted:
+            yield "这次没有生成有效回答，请换一种问法再试一次。"
 
     def start_role_interview(
         self,
@@ -236,14 +279,13 @@ class InterviewAssistantService:
         history: list[dict] | None = None,
         resume_text: str = "",
         resume_filename: str = "",
+        tenant_context: dict | None = None,
     ) -> dict:
         _ = history  # 历史参数保留是为了兼容旧接口签名
-        return self.interview_coordinator.start_interview(
-            role=role,
-            resume_text=resume_text,
-            resume_filename=resume_filename,
-            interview_state=None,
-        )
+        arguments = {"role": role, "resume_text": resume_text, "resume_filename": resume_filename, "interview_state": None}
+        if isinstance(self.interview_coordinator, LangGraphInterviewCoordinator):
+            arguments["tenant_context"] = tenant_context or {}
+        return self.interview_coordinator.start_interview(**arguments)
 
     def interview_chat(
         self,
@@ -251,13 +293,17 @@ class InterviewAssistantService:
         history: list[dict],
         interview_state: dict | None = None,
         interview_questions: Sequence[str] | None = None,
+        run_id: str | None = None,
     ) -> dict:
-        return self.interview_coordinator.process_turn(
-            user_input=user_input,
-            history=history,
-            interview_state=interview_state,
-            interview_questions=interview_questions or [],
-        )
+        arguments = {
+            "user_input": user_input,
+            "history": history,
+            "interview_state": interview_state,
+            "interview_questions": interview_questions or [],
+        }
+        if isinstance(self.interview_coordinator, LangGraphInterviewCoordinator):
+            arguments["run_id"] = run_id
+        return self.interview_coordinator.process_turn(**arguments)
 
     def interview_chat_stream(
         self,

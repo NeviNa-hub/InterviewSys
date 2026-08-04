@@ -14,6 +14,7 @@ from rag.self_rag import SelfRAGRouter
 from utils.config_handler import chroma_conf, rag_conf
 from utils.prompt_loader import load_rag_prompts
 from rag.vector_store import VectorStoreService
+from rag.hybrid_retriever import HybridRetriever
 
 
 def print_prompt(prompt):
@@ -38,28 +39,39 @@ class RagSummarizeService(object):
         self.prompt_template = PromptTemplate.from_template(self.prompt_text)
         self.model = chat_model
         self.chain = self._init_chain()
+        self.hybrid_retriever = HybridRetriever(self.vector_store)
 
     def _init_chain(self):
         chain = self.prompt_template | self.model | StrOutputParser()
         return chain
 
-    def _retrieve_with_multi_recall(self, query: str, history=None) -> list[Document]:
+    def _retrieve_with_multi_recall(self, query: str, history=None, filters=None) -> list[Document]:
         recall_queries = self.query_optimizer.build_recall_queries(query, history)
         docs_groups = []
         for recall_query in recall_queries:
             try:
-                docs = self.retriever.invoke(recall_query)
+                docs = self.hybrid_retriever.retrieve(
+                    recall_query,
+                    vector_k=self.recall_k,
+                    keyword_k=int(rag_conf.get("keyword_recall_k", 8)),
+                    filters=filters,
+                )
                 docs_groups.append(docs)
             except Exception:
                 continue
         return self.query_optimizer.merge_documents(docs_groups)
 
-    def retriever_docs(self, query: str, history=None) -> list[Document]:
+    def retriever_docs(self, query: str, history=None, filters=None) -> list[Document]:
         optimized_query = self.query_optimizer.get_rerank_query(query, history)
-        docs = self._retrieve_with_multi_recall(query, history)
+        docs = self._retrieve_with_multi_recall(query, history, filters)
         if not docs:
             try:
-                docs = self.retriever.invoke(optimized_query)
+                docs = self.hybrid_retriever.retrieve(
+                    optimized_query,
+                    vector_k=self.recall_k,
+                    keyword_k=int(rag_conf.get("keyword_recall_k", 8)),
+                    filters=filters,
+                )
             except Exception:
                 docs = []
 
@@ -71,6 +83,23 @@ class RagSummarizeService(object):
         if not self.enable_rerank or not self.rerank_service:
             return docs[: self.final_k]
         return self.rerank_service.rerank(optimized_query, docs)
+
+    def search_with_citations(self, query: str, history=None, filters=None) -> dict:
+        documents = self.retriever_docs(query, history, filters)
+        citations = []
+        for index, document in enumerate(documents, start=1):
+            metadata = document.metadata or {}
+            citations.append(
+                {
+                    "index": index,
+                    "source": metadata.get("source") or metadata.get("filename") or "知识库文档",
+                    "chunk_id": metadata.get("chunk_id") or f"chunk-{index}",
+                    "chunk_index": metadata.get("chunk_index", index - 1),
+                    "content": document.page_content[:500],
+                    "score": metadata.get("rerank_score") or metadata.get("rrf_score"),
+                }
+            )
+        return {"documents": documents, "citations": citations}
 
     def _build_context(self, query: str, history=None) -> str:
         context_docs = self.retriever_docs(query, history)
