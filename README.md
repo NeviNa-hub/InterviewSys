@@ -2,6 +2,8 @@
 
 一个面向计算机与软件相关岗位面试准备场景的智能辅导项目，采用 `Vue 3 + Vite + Pinia + FastAPI + LangGraph + LangChain + Chroma` 架构，支持技术问答、岗位模拟面试、简历定制化提问、多 Agent 执行可视化、项目/会话管理、面试评分、报告导出、ECharts 数据看板、角色化管理后台和 LangSmith 调试。
 
+<img width="1920" height="911" alt="image" src="https://github.com/user-attachments/assets/184e9eb1-abfa-4fc4-b4e9-e63611886f7a" />
+
 ## 功能概览
 
 - 正式登录体系与 RBAC
