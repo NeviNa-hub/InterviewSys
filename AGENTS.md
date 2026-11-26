@@ -45,7 +45,7 @@
 - 页面、组合式函数和 Store 通过 `src/api/client.js` 访问 FastAPI。普通请求用 Axios，上传用 FormData；按接口实际响应字段取值，并保留服务端错误信息。
 - 登录态由服务端 Cookie 维护。Axios 保持 withCredentials，流式 fetch 保持 credentials: "include"。刷新通过 /api/bootstrap 恢复会话，权限由后端逐请求校验。
 - 问答和面试流使用 POST + NDJSON，按行解析事件并处理跨块残行。保留 AbortSignal 取消和已有的面试运行恢复逻辑。
-- 开发环境经 Vite 将 /api 代理到 8080；独立部署沿用 API_BASE 配置。新增下载链接也应使用同一基址。
+- npm run dev 使用独立的模拟 HTTP 接口；连接服务器时通过 dev:server 和 INTERVIEW_API_TARGET 转发 /api；独立部署沿用 API_BASE 配置。新增下载链接也应使用同一基址。
 
 ## UI 与安全
 
@@ -77,3 +77,4 @@ export const renameProject = (params, data) => {
 
 - 数据库迁移和前后端构建由用户自行在服务器执行，助手不执行这两类命令。
 - 助手负责代码审查、接口调用链核对、必要的逻辑测试和无用代码清理；不得将未执行的迁移、构建或真实联调描述为已通过。
+

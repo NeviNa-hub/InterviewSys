@@ -4165,3 +4165,4 @@ button:disabled {
     min-height: 360px;
   }
 }
+.demo-notice { padding: 6px 16px; text-align: center; background: #fff4d6; color: #644600; font-size: 13px; }

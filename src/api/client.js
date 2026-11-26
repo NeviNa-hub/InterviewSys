@@ -26,7 +26,7 @@ const explicitApiBase =
   (typeof import.meta !== "undefined" && import.meta.env?.VITE_APP_API_BASE_URL) ||
   "";
 
-export const API_BASE = String(explicitApiBase).replace(/\/$/, "");
+export const API_BASE = String(import.meta.env.VITE_INTERVIEW_DEMO ? "" : explicitApiBase).replace(/\/$/, "");
 
 // 普通接口统一走 axios：
 // - 自动拼接 baseURL
@@ -102,3 +102,4 @@ export async function apiStreamPost(path, body, signal) {
 
   return response;
 }
+

@@ -1,4 +1,5 @@
 <template>
+  <aside v-if="isDemo" class="demo-notice">演示模式 · 使用模拟数据，服务重启后清空。请勿输入真实密码或上传个人简历。</aside>
   <!-- 首屏初始化中：这里通常在请求 /api/bootstrap，拿登录态、天气、工作区、角色配置等基础数据。 -->
   <div v-if="bootstrapping" class="app-loading-shell">
     <div class="app-loading-copy">正在加载智能面试辅导系统...</div>
@@ -154,6 +155,7 @@
 </template>
 
 <script setup>
+const isDemo = import.meta.env.VITE_INTERVIEW_DEMO;
 import { computed, defineAsyncComponent, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { HISTORY_MODE, INTERVIEW_MODE, QA_MODE } from "./constants.js";
@@ -438,3 +440,4 @@ const {
   setQaInput,
 } = app;
 </script>
+
